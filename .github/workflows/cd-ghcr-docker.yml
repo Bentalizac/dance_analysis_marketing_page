@@ -1,0 +1,94 @@
+name: CD - GHCR Docker Deploy (DISABLED)
+
+on:
+  # Workflow disabled: no branches configured
+  push:
+    branches: []
+
+env:
+  # Image name for this repository in GitHub Container Registry
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/dance_coach_marketing_page
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    # Allow pushing images to GHCR using GITHUB_TOKEN
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract short SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}
+            ${{ env.IMAGE_NAME }}:latest
+
+      - name: Save image tag for deploy job
+        run: echo "${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.sha_short }}" > image-tag.txt
+
+      - name: Upload image tag
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tag
+          path: image-tag.txt
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download image tag
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tag
+
+      - name: Read image tag
+        id: read-tag
+        run: echo "IMAGE_TAG=$(cat image-tag.txt)" >> $GITHUB_OUTPUT
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy on remote host
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no "$USER@$HOST" << 'EOF'
+          set -e
+
+          IMAGE_TAG="${{ steps.read-tag.outputs.IMAGE_TAG }}"
+
+          echo "Pulling image: $IMAGE_TAG"
+          docker pull "$IMAGE_TAG"
+
+          echo "Stopping existing container (if any)..."
+          docker stop marketing-page || true
+          docker rm marketing-page || true
+
+          echo "Starting new container..."
+          docker run -d --name marketing-page -p 80:80 "$IMAGE_TAG"
+
+          echo "Deployment complete."
+          EOF
