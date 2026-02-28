@@ -1,1 +1,1 @@
-export const PRODUCT_NAME = "FrameUp2";
+export const PRODUCT_NAME = "FrameUp";
